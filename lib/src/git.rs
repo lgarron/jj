@@ -1148,13 +1148,32 @@ pub fn reset_head(mut_repo: &mut MutableRepo, wc_commit: &Commit) -> Result<(), 
     }
 
     // If there is an ongoing operation (merge, rebase, etc.), we need to clean it
-    // up. This function isn't implemented in `gix`, so we need to use `git2`.
+    // up.
+    //
+    // TODO: Polish and upstream this to `gix`.
     if git_repo.state().is_some() {
-        get_git_backend(mut_repo.store())?
-            .open_git_repo()
-            .map_err(GitExportError::from_git)?
-            .cleanup_state()
-            .map_err(GitExportError::from_git)?;
+        // Based on the files `git2::Repository::cleanup_state` deletes; when
+        // upstreaming this logic should probably become more elaborate to match
+        // `git(1)` behaviour.
+        const STATE_FILE_NAMES: &[&str] = &[
+            "MERGE_HEAD",
+            "MERGE_MODE",
+            "MERGE_MSG",
+            "REVERT_HEAD",
+            "CHERRY_PICK_HEAD",
+            "BISECT_LOG",
+        ];
+        const STATE_DIR_NAMES: &[&str] = &["rebase-merge", "rebase-apply", "sequencer"];
+        let handle = |result: std::io::Result<()>| match result {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            _ => result.map_err(GitExportError::from_git),
+        };
+        for file_name in STATE_FILE_NAMES {
+            handle(std::fs::remove_file(git_repo.path().join(file_name)))?;
+        }
+        for dir_name in STATE_DIR_NAMES {
+            handle(std::fs::remove_dir_all(git_repo.path().join(dir_name)))?;
+        }
     }
 
     let parent_tree = wc_commit.parent_tree(mut_repo)?;
